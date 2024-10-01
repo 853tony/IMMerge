@@ -3,6 +3,7 @@
 # Requires bcftools
 import argparse
 import os
+import time
 from xopen import PipedCompressionWriter, xopen
 
 def process_args(arg_list = ''):
@@ -181,6 +182,11 @@ def write_info(args):
         os.mkdir(args.output_dir)
 
     for i in range(len(args.input)):
+        log_filename = args.output_fn[i].rsplit('.', 2)[0] + '.info.log'
+        with open(log_filename, 'w') as log_file:
+            log_file.write(f"Processing started for file: {args.input[i]} at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Output will be written to: {args.output_fn[i]}\n")
+
         if args.verbose:
             print(
                 f'\n#### Processing files: Start. input file = {args.input[i]}; output file = {os.path.join(args.output_dir, args.output_fn[i])}')
@@ -192,6 +198,9 @@ def write_info(args):
         output_fh.write('SNP\trsID\tREF(0)\tALT(1)\tALT_Frq\tMAF\tRsq\tGenotyped\n')
         if args.verbose:
             print(f'#### Processing files: Write column headers to output file {args.output_fn[i]}')
+        count = 0
+        error_count = 0
+        warning_count = 0
 
         with xopen(args.input[i]) as input_fh:
             line = input_fh.readline().strip()
@@ -217,8 +226,22 @@ def write_info(args):
                 print(f'#### Processing files: Indices of columns (name (index)): ID ({idx_snp}); REF ({idx_ref}); ALT ({idx_alt}); INFO ({idx_info})')
                 print(f'#### Processing files: Loop through input file')
 
-            count = 0
+            with open(log_filename, 'a') as log_file:
+                log_file.write(f"Starting main processing loop at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            
             while line != '':
+                count += 1
+                if args.verbose:
+                    if count % 1000 == 0:
+                        print('.', end='', flush=True)
+                    if count % 50000 == 0:
+                        print(f'{count} lines processed')
+
+                if count % 100000 == 0:
+                    with open(log_filename, 'a') as log_file:
+                        log_file.write(f"Processed {count} lines at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    if args.verbose:
+                        print(f'{count} lines processed')
                 tmp_lst = line.split()
                 if args.use_rsid:
                     snp = f'{tmp_lst[idx_chr]}:{tmp_lst[idx_pos]}:{tmp_lst[idx_ref]}:{tmp_lst[idx_alt]}'
@@ -252,23 +275,34 @@ def write_info(args):
                 if args.mixed_genotype_status:
                     genotyped = genotype_status(genotyped, args.genotyped_label, args.imputed_label)
 
-                # Sanity check
+                # Sanity check # Modified by Tony Che https://github.com/853tony/IMMerge # forked from belowlab/IMMerge
                 # Raise error if any field of AF, MAF, R2 and genotype status is missing
-                for field in [alt_frq, maf, rsq, genotyped]:
+                for field, field_name in zip([alt_frq, maf, rsq, genotyped], ['AF', 'MAF', 'R2', 'GenotypeStatus']):
                     if field == -1:
-                        print("\nError: Missing field(s) in AF, MAF, Rsq, Genotyped status (missing value indicated by -1):")
-                        print(f"  - SNP={snp}, rsID={rsid}, REF={ref}, ALT={alt}, AF={alt_frq}, MAF={maf}, ImputationQuality(R2)={rsq}, GenotypeStatus={genotyped}")
-                        print("Exit")
-                        exit()
+                        if rsq == -1 and "TYPED_ONLY" in genotyped:
+                            with open(log_filename, 'a') as log_file:
+                                log_file.write(f"Warning: SNP {snp}: TYPED_ONLY with missing R2\n")
+                            warning_count += 1
+                            print(f"Warning: Please confirm if data is still written to info when genotyped is TYPED_ONLY and R2 is -1 in your data. If not, please do not use this forked version.")
+                            print(f"SNP {snp} due to genotyped status {genotyped} with invalid R2 value\n")
+                        else:
+                            with open(log_filename, 'a') as log_file:
+                                log_file.write(f"Error: SNP {snp}: Missing {field_name}\n")
+                            error_count += 1
+                            print("\nError: Missing field(s) in AF, MAF, Rsq, Genotyped status (missing value indicated by -1):")
+                            print(f"  - SNP={snp}, rsID={rsid}, REF={ref}, ALT={alt}, AF={alt_frq}, MAF={maf}, ImputationQuality(R2)={rsq}, GenotypeStatus={genotyped}")
+                            print("Exit")
+                            exit()
 
                 output_fh.write(f'{snp}\t{rsid}\t{ref}\t{alt}\t{alt_frq}\t{maf}\t{rsq}\t{genotyped}\n')
-                count += 1
-                if args.verbose:
-                    if count % 1000 == 0:
-                        print('.', end='', flush=True)
-                    if count % 50000 == 0:
-                        print(f'{count} lines processed')
                 line = input_fh.readline().strip()
+
+        with open(log_filename, 'a') as log_file:
+            log_file.write(f"Processing completed for file: {args.input[i]} at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Total lines processed: {count}\n")
+            log_file.write(f"Total errors encountered: {error_count}\n")
+            log_file.write(f"Total warnings issued: {warning_count}\n")
+
         output_fh.close()
         if args.verbose:
             print(f'\n#### Processing files: Done. input={args.input[i]}')
